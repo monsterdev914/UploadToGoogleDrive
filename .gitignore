@@ -1,0 +1,25 @@
+# Python virtual environment
+venv/
+
+# Local downloads
+downloads/*
+
+# Google credentials
+credentials.json
+token.json
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Editor files (optional)
+*.swp
+*.swo
+*.idea/
+*.vscode/
+
+# OS files (optional)
+.DS_Store
+Thumbs.db
