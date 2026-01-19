@@ -11,6 +11,7 @@ from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.oauth2.credentials import Credentials
 UPLOAD_JOB_FILE = Path("upload_job.json")
+SIZE_TOLERANCE_KB = 30  # allow 5 KB difference
 ROOT_SHARED_FOLDER_ID = "1h6RHOs6FYVMAX4l-4kUwszQ3tsLFBfPZ"
 # OAuth scopes
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -85,7 +86,7 @@ async def download_file_async(dest_folder: str, service):
                     await page.goto(url, wait_until="domcontentloaded")
                     soup = BeautifulSoup(await page.content(), 'html.parser')
                     table_for_qrts = soup.find('table')
-                    trs_for_qrts = table_for_qrts.find_all('tr')[1:]
+                    trs_for_qrts = table_for_qrts.find_all('tr')[3:]
                     for tr in trs_for_qrts:
                         href = tr.find('a')['href']
                         qrt = tr.find('a').text
@@ -96,21 +97,38 @@ async def download_file_async(dest_folder: str, service):
 
                         for tr_file in trs_for_file:
                             file_href = tr_file.find('a')['href']
+                            expected_kb = float(
+                                tr_file("td")[1]
+                                .text
+                                .replace("KB", "")
+                                .replace(",", "")
+                                .strip()
+                            )
                             if check_upload_jobs_to_download(file_href):
                                 continue
-                            async with page.expect_download() as download_info:
-                                await page.evaluate(f'''
-                                    () => {{
-                                        const a = document.querySelector('a[href="{file_href}"]');
-                                        if (a) a.click();
-                                    }}
-                                ''')
-                            download = await download_info.value
-                            file_path = dest_folder / download.suggested_filename
-                            await download.save_as(file_path)
-                            # read upload job file and append new job
-                            append_upload_job(str(file_path), download.suggested_filename, get_or_create_folder(service, f"{year}/{qrt}"))
-                            print(f"Saved: {file_path}")
+                            while True:
+                                async with page.expect_download(timeout=25*60*1000) as download_info:
+                                    await page.evaluate(f'''
+                                        () => {{
+                                            const a = document.querySelector('a[href="{file_href}"]');
+                                            if (a) a.click();
+                                        }}
+                                    ''')
+                                download = await download_info.value
+                                file_path = dest_folder / download.suggested_filename
+                                await download.save_as(file_path)
+                                actual_kb = os.path.getsize(file_path) / 1024
+                                if abs(expected_kb - actual_kb) > SIZE_TOLERANCE_KB:
+                                    print(
+                                        f"Size mismatch for {download.suggested_filename}: "
+                                        f"expected {expected_kb:.2f} KB, got {actual_kb:.2f} KB. Deleting file."
+                                    )
+                                    os.remove(file_path)
+                                    continue  # move to next file
+                                # read upload job file and append new job
+                                append_upload_job(str(file_path), download.suggested_filename, get_or_create_folder(service, f"{year}/{qrt}"))
+                                print(f"Saved: {file_path}")
+                                break
         await browser.close()
 
 def check_upload_jobs_to_download(file_name: str):
@@ -205,4 +223,15 @@ async def main():
         pass
 if __name__ == "__main__":
     print("This script is being run directly.")
-    asyncio.run(main())
+    
+    while True:
+        try:
+            asyncio.run(main())
+            print("Main function completed successfully.")
+            break  # exit loop if main finishes without error
+        except KeyboardInterrupt:
+            print("\nScript interrupted by user. Exiting.")
+            break  # stop the loop if user presses Ctrl+C
+        except Exception as e:
+            print(f"\nUnexpected error: {e}. Restarting main in 5 seconds...")
+            time.sleep(5)  # wait before retrying
